@@ -828,7 +828,9 @@ function drawOleds(white, black) {
     o.fillStyle = "#000"; o.fillRect(0, 0, 128, 64);
     for (let j = 0; j < 2; j++) {
       const k = white[2 * s + j], cx = 32 + 64 * j;
-      if (k.label) oledText(o, k.label, cx, 54, "center", 14, k.lit);
+      // Une touche enfoncee s'inverse : on voit la note qui sort sous le doigt.
+      const down = whiteKeys[2 * s + j]?.classList.contains("down");
+      if (k.label) oledText(o, k.label, cx, 54, "center", 14, k.lit || down);
       // Curseur : deux crochets ; tete de lecture : une barre pleine sous la touche.
       o.fillStyle = "#fff";
       if (k.cur) { o.fillRect(cx - 28, 38, 2, 20); o.fillRect(cx + 26, 38, 2, 20); }
@@ -837,7 +839,8 @@ function drawOleds(white, black) {
     }
     BLACK_LEFT.forEach((w, b) => {
       if (w !== 2 * s && w !== 2 * s + 1 || !black[b].label) return;
-      oledText(o, black[b].label, w === 2 * s ? 64 : 126, 18, w === 2 * s ? "center" : "right", 11, black[b].lit);
+      oledText(o, black[b].label, w === 2 * s ? 64 : 126, 18, w === 2 * s ? "center" : "right", 11,
+               black[b].lit || blackKeys[b]?.classList.contains("down"));
     });
     o.fillStyle = "#333"; o.fillRect(0, 31, 128, 1);
     // Ce qui differe de ce que l'ecran a recu : les pages a envoyer.
