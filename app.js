@@ -16,7 +16,7 @@ const { default: createNidmi } = await import(`./nidmi.js?v=${STAMP}`);
 const M = await createNidmi({ locateFile: (path) => `${path}?v=${STAMP}` });
 
 // Et s'il manque quand meme quelque chose, on le dit au lieu d'un ecran noir.
-const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol"];
+const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active"];
 const missing = REQUIRED.filter((f) => typeof M[f] !== "function");
 if (missing.length) {
   document.body.insertAdjacentHTML("afterbegin",
@@ -35,7 +35,7 @@ const CMD = {
   SetNumRows: 11, SetStepSpan: 14, SetRowKind: 48, SetRowCCNumber: 49, SetRowCCInterp: 50,
   SetStepCCLock: 53, EnsureStepSubPattern: 86, SetPatternNumBars: 76, SetTrackCount: 90, SetTrackRows: 91, SetTrackChannel: 92,
   SetCurvePoint: 93, RemoveCurvePoint: 94, MoveCurvePoint: 95, ClearCurve: 96, SetCurveTolerance: 97,
-  RecordCurveTurn: 98,
+  RecordCurveTurn: 98, SetFillEvery: 104, SetStepCond: 105, SetFillHeld: 103, ArmFillNextBar: 108,
 };
 // Un point de courbe : position en ticks (384 par mesure), valeur 14 bits, forme
 // (0 palier, 1 courbe, 2 S) et tension.
@@ -57,8 +57,8 @@ const QUALITY = ["maj", "min", "dim", "aug", "sus2", "sus4"];
 // Les modes harmoniques par ce que la row FAIT (l'ancien A est fondu dans Scale).
 const MODE_NAMES = ["Scale", "Scale", "Tones", "Off", "Follow"];
 // RowDisplayMode, dans l'ordre de l'enum (StepTypes.h).
-const DISPLAY_NAMES = ["Steps", "Accent", "Swing", "Controller", "Notes"];
-const DM = { Steps: 0, Accent: 1, Swing: 2, Controller: 3, Notes: 4 };
+const DISPLAY_NAMES = ["Steps", "Accent", "Swing", "Controller", "Notes", "Fill"];
+const DM = { Steps: 0, Accent: 1, Swing: 2, Controller: 3, Notes: 4, Fill: 5 };
 // La serigraphie : le role de BASE de chaque molette, le meme dans toutes les vues.
 const SILK = ["ROW", "STEP", "VALUE", "VELOCITY", "LENGTH", "TEMPO"];
 
@@ -105,6 +105,14 @@ function loadDemo() {
   [0, 6, 8, 11].forEach((s) => put(2, s, 36, 120, 40));
   [4, 12].forEach((s) => put(3, s, 38, 105, 40));
   [0, 2, 4, 6, 8, 10, 12, 14].forEach((s) => put(4, s, 42, s % 4 ? 60 : 90, 20));
+  // LE FILL : la caisse claire roule sur la fin de mesure, le charley se tait. Il tombe
+  // tout seul sur la derniere mesure, toutes les quatre boucles — ou quand on tape PLAY.
+  [[12, 70], [13, 85], [14, 100], [15, 120]].forEach(([s, v]) => {
+    put(3, s, 38, v, 30);
+    cmd(CMD.SetStepCond, { a: 3, b: s, c: 1 });
+  });
+  [12, 14].forEach((s) => cmd(CMD.SetStepCond, { a: 4, b: s, c: 2 }));
+  cmd(CMD.SetFillEvery, { a: 4 });
   cmd(CMD.EnsureStepSubPattern, { a: 4, b: 14, c: 3 });   // un roulement en triolet
   [0, 1, 2].forEach((k) => cmd(CMD.SetSubStep, { a: 0, b: k, c: 42, d: 55 + 15 * k, e: 40 }));
 
@@ -417,13 +425,32 @@ document.getElementById("b-projet").onclick = () => goView(M._nidmi_view() === 4
 // REC comme chez Elektron : un appui = saisie dans la grille (lecture ou non) ;
 // REC + PLAY ensemble = enregistrement live ; STOP sort du live.
 function stopTransport() {
+  stopFill();
   M._nidmi_stop();
   if (host.rec === "live") host.rec = "off";
 }
-function pressPlay() {
-  if (host.recHeld) { host.recUsed = true; host.rec = "live"; }
-  if (!M._nidmi_is_playing()) M._nidmi_play(now());
-  else if (!host.recHeld) stopTransport();
+// PLAY, comme le bouton FILL d'Elektron une fois la lecture lancee (STOP arrete) :
+//   arrete           lance la lecture
+//   en lecture       tenu  = FILL tant qu'on tient, d'un doigt, a la volee
+//                    tape  = FILL sur la mesure suivante
+//   REC tenu         enregistrement live (REC garde la priorite)
+const playHold = { down: false, held: false, timer: 0 };
+function playDown() {
+  if (host.recHeld) {
+    host.recUsed = true; host.rec = "live";
+    if (!M._nidmi_is_playing()) M._nidmi_play(now());
+    return;
+  }
+  if (!M._nidmi_is_playing()) { M._nidmi_play(now()); return; }
+  Object.assign(playHold, { down: true, held: false });
+  playHold.timer = setTimeout(() => { playHold.held = true; cmd(CMD.SetFillHeld, { x: 1 }); }, 220);
+}
+function playUp() {
+  if (!playHold.down) return;
+  playHold.down = false;
+  clearTimeout(playHold.timer);
+  if (playHold.held) cmd(CMD.SetFillHeld, { x: 0 });
+  else { cmd(CMD.ArmFillNextBar); toast("Fill: next bar"); }
 }
 function recDown() { host.recHeld = true; host.recUsed = false; }
 function recUp() {
@@ -433,8 +460,10 @@ function recUp() {
 }
 // Une souris n'a qu'un doigt : ⇧ + REC fait office de REC + PLAY.
 function recLive() { host.rec = "live"; if (!M._nidmi_is_playing()) M._nidmi_play(now()); }
-const playToggle = pressPlay;
-document.getElementById("b-play").onclick = pressPlay;
+function stopFill() { if (playHold.down) { playHold.down = false; clearTimeout(playHold.timer); cmd(CMD.SetFillHeld, { x: 0 }); } }
+const playBtn = document.getElementById("b-play");
+playBtn.addEventListener("pointerdown", (e) => { playBtn.setPointerCapture(e.pointerId); playDown(); });
+["pointerup", "pointercancel"].forEach((t) => playBtn.addEventListener(t, playUp));
 document.getElementById("b-stop").onclick = stopTransport;
 const recBtn = document.getElementById("b-rec");
 recBtn.addEventListener("pointerdown", (e) => { if (isShift()) { recLive(); return; } recBtn.setPointerCapture(e.pointerId); recDown(); });
@@ -606,6 +635,11 @@ function pressStep(i) {
   moveCursor(step - cur);
   if (M._nidmi_row_kind(row) === 1) return pressCurveStep(row, bar, step);
   const p = M._nidmi_step(row, bar, step), mode = M._nidmi_row_display(row);
+  if (mode === DM.Fill) {
+    // always -> fill -> not fill -> always
+    cmd(CMD.SetStepCond, { a: row, b: step, c: (((p >> 4) & 3) + 1) % 3, f: bar });
+    return null;
+  }
   if (mode === 1) {
     const on = !(p & 2);
     cmd(CMD.SetStepAccent, { a: row, b: step, x: on ? 1 : 0, f: bar });
@@ -773,7 +807,7 @@ function keyLabels() {
         const p = M._nidmi_step(row, bar, s), dm = M._nidmi_row_display(row);
         label = String(s + 1);
         if (M._nidmi_row_kind(row) === 1) lit = M._nidmi_curve_point_on_step(row, bar, s) >= 0;
-        else lit = dm === DM.Accent ? !!(p & 2) : dm === DM.Swing ? !!(p & 8) : !!(p & 1);
+        else lit = dm === DM.Accent ? !!(p & 2) : dm === DM.Swing ? !!(p & 8) : dm === DM.Fill ? !!(p & 48) : !!(p & 1);
         isCur = s === cur;
       }
     } else if (mode === "harmony") {
@@ -807,7 +841,8 @@ function keyLabels() {
 addEventListener("keydown", (e) => {
   if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
   if (e.key === "Shift") { setShift(true); return; }
-  if (e.code === "Space") { e.preventDefault(); playToggle(); return; }
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) playDown(); return; }
+  if (e.key === "Escape") { stopTransport(); return; }
   if (e.key === "Enter") { e.preventDefault(); if (!e.repeat) recDown(); return; }
   if (e.repeat && e.code.startsWith("Digit")) return;
   const k = e.key.toLowerCase();
@@ -821,6 +856,7 @@ addEventListener("keydown", (e) => {
 addEventListener("keyup", (e) => {
   if (e.key === "Shift") setShift(false);
   if (e.key === "Enter") recUp();
+  if (e.code === "Space") playUp();
 });
 addEventListener("blur", () => setShift(false));
 
@@ -987,6 +1023,13 @@ function drawHeader() {
     g.fillText(live ? "LIVE" : "REC", rx, 14);
   }
   if (isShift()) { rx -= 14; g.fillStyle = C.lent; g.fillText("⇧", rx, 14); }
+  // FILL : allume pendant le fill, clignote quand il est arme pour la mesure suivante.
+  const fillOn = M._nidmi_fill_active(), fillArmed = M._nidmi_fill_armed();
+  if (fillOn || fillArmed) {
+    rx -= 36;
+    g.fillStyle = fillOn ? C.amber : Math.floor(now() / 250) % 2 ? "#5a3d10" : C.amber;
+    g.fillText("FILL", rx, 14);
+  }
 }
 
 // La fenetre de temps : 1/hZoom de mesure, paginee pour contenir le curseur.
@@ -1099,6 +1142,15 @@ function drawRows(area) {
         const p = M._nidmi_step(r, bar, s);
         if (!(p & 1) || covered[s]) continue;
         const accent = p & 2, swing = p & 8, vel = (p >> 16) & 255;
+        if (dm === DM.Fill) {
+          // QUAND le pas joue : ambre = seulement en fill, gris barre = jamais en fill.
+          if (!visible(s)) continue;
+          const cond = (p >> 4) & 3, x = xOf(s);
+          g.fillStyle = cond === 1 ? C.amber : cond === 2 ? "#3a4048" : "rgba(95, 183, 192, 0.22)";
+          g.fillRect(x + 1, y + 1, cw - 2, rowH - 2);
+          if (cond === 2) { g.strokeStyle = "#7c858e"; g.lineWidth = 1; g.beginPath(); g.moveTo(x + 3, y + rowH - 3); g.lineTo(x + cw - 3, y + 3); g.stroke(); }
+          continue;
+        }
         if (dm === DM.Accent || dm === DM.Swing) {
           // Un accent n'est pas long, il est fort : pas de duree dans ces modes.
           if (!visible(s)) continue;
