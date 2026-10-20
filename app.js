@@ -520,7 +520,7 @@ function liveKey(midi) {
   const release = playKey(midi), row = M._nidmi_cur_row();
   if (M._nidmi_view() <= 2 && M._nidmi_row_kind(row) !== 1 && M._nidmi_is_playing()) {
     const live = M._nidmi_playhead(row), n = M._nidmi_row_steps(row);
-    if (live !== 255 && live < n) writeStep(row, live, M._nidmi_play_bar(), writtenNote(midi));
+    if (live !== 255 && live < n) writeStep(row, live, M._nidmi_play_bar_row(row), writtenNote(midi));
   }
   return release;
 }
