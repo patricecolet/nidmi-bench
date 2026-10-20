@@ -789,16 +789,28 @@ addEventListener("resize", placeBlackKeys);
 // LES HUIT OLED du boitier, 0,96" 128x64 SSD1306, une par paire de blanches : la noire
 // entre les deux au milieu, celle de la frontiere au bord droit. Monochrome, a leur vraie
 // definition, agrandies sans lissage : on juge la lisibilite avant de souder.
-const oledEls = [];
+//
+// LE TEMPS DU BUS EST SIMULE. On dessine ce que l'ecran DEVRAIT montrer, puis seules les
+// pages modifiees (8 bandes de 128 x 8 pixels) partent sur le bus I2C partage, derriere
+// le PCA9548A, a son debit reel : 9 bits par octet, 128 octets par page, quelques octets
+// d'adressage, un octet pour changer de canal. Ce qu'on VOIT est ce qui est arrive.
+const oled = { screens: [], rate: 400000, load: 0, queue: [], busUs: 0 };
 (function makeOleds() {
   const host = document.getElementById("oleds");
   if (!host) return;
   for (let s = 0; s < 8; s++) {
-    const c = document.createElement("canvas");
-    c.width = 128; c.height = 64;
-    host.appendChild(c);
-    oledEls.push(c.getContext("2d"));
+    const shown = document.createElement("canvas");
+    shown.width = 128; shown.height = 64;
+    host.appendChild(shown);
+    const want = document.createElement("canvas");
+    want.width = 128; want.height = 64;
+    const sctx = shown.getContext("2d");
+    sctx.fillStyle = "#000"; sctx.fillRect(0, 0, 128, 64);
+    oled.screens.push({ shown: sctx, want: want.getContext("2d", { willReadFrequently: true }),
+                        sent: new Uint8Array(128 * 64), pending: new Set() });
   }
+  const sel = document.getElementById("oled-bus");
+  if (sel) sel.onchange = () => { oled.rate = Number(sel.value); };
 })();
 function oledText(o, text, x, y, align, size, inverted) {
   o.font = `bold ${size}px ui-monospace, Menlo, monospace`;
@@ -809,20 +821,66 @@ function oledText(o, text, x, y, align, size, inverted) {
   o.fillStyle = inverted ? "#000" : "#fff";
   o.fillText(t, x0, y);
 }
+// Ce que chaque ecran DEVRAIT montrer.
 function drawOleds(white, black) {
-  oledEls.forEach((o, s) => {
+  oled.screens.forEach((sc, s) => {
+    const o = sc.want;
     o.fillStyle = "#000"; o.fillRect(0, 0, 128, 64);
     for (let j = 0; j < 2; j++) {
       const k = white[2 * s + j], cx = 32 + 64 * j;
-      if (k.label) oledText(o, k.label, cx, 56, "center", 14, k.lit);
-      if (k.cur) { o.fillStyle = "#fff"; o.fillRect(cx - 20, 61, 40, 2); }
+      if (k.label) oledText(o, k.label, cx, 54, "center", 14, k.lit);
+      // Curseur : deux crochets ; tete de lecture : une barre pleine sous la touche.
+      o.fillStyle = "#fff";
+      if (k.cur) { o.fillRect(cx - 28, 38, 2, 20); o.fillRect(cx + 26, 38, 2, 20); }
+      if (k.head) o.fillRect(cx - 30, 60, 60, 4);
     }
     BLACK_LEFT.forEach((w, b) => {
       if (w !== 2 * s && w !== 2 * s + 1 || !black[b].label) return;
       oledText(o, black[b].label, w === 2 * s ? 64 : 126, 18, w === 2 * s ? "center" : "right", 11, black[b].lit);
     });
     o.fillStyle = "#333"; o.fillRect(0, 31, 128, 1);
+    // Ce qui differe de ce que l'ecran a recu : les pages a envoyer.
+    const img = o.getImageData(0, 0, 128, 64).data;
+    for (let page = 0; page < 8; page++) {
+      let dirty = false;
+      for (let y = page * 8; y < page * 8 + 8 && !dirty; y++)
+        for (let x = 0; x < 128; x++) {
+          const on = img[(y * 128 + x) * 4] > 100 ? 1 : 0;
+          if (on !== sc.sent[y * 128 + x]) { dirty = true; break; }
+        }
+      if (dirty && !sc.pending.has(page)) { sc.pending.add(page); oled.queue.push([s, page]); }
+    }
   });
+}
+// Le bus : autant d'octets que le debit en laisse passer depuis la derniere image.
+let oledLast = 0, oledLastScreen = -1, oledBusyUs = 0, oledWindowUs = 0;
+function pumpOleds() {
+  const t = now(), dtUs = oledLast ? Math.min(100000, (t - oledLast) * 1000) : 0;
+  oledLast = t;
+  let budgetUs = dtUs + oled.busUs;
+  const usPerByte = 9e6 / oled.rate;
+  while (oled.queue.length) {
+    const [s, page] = oled.queue[0];
+    const bytes = 128 + 7 + (s !== oledLastScreen ? 2 : 0);   // donnees + adressage + canal
+    const cost = bytes * usPerByte;
+    if (cost > budgetUs) break;
+    budgetUs -= cost; oledBusyUs += cost;
+    oled.queue.shift();
+    oledLastScreen = s;
+    const sc = oled.screens[s];
+    sc.pending.delete(page);
+    const img = sc.want.getImageData(0, page * 8, 128, 8);
+    for (let i = 0; i < 128 * 8; i++) {
+      const on = img.data[i * 4] > 100 ? 1 : 0;
+      sc.sent[page * 8 * 128 + i] = on;
+      img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = on ? 235 : 0;
+      img.data[i * 4 + 3] = 255;
+    }
+    sc.shown.putImageData(img, 0, page * 8);
+  }
+  oled.busUs = oled.queue.length ? budgetUs : 0;   // le reste du budget attend la suite
+  oledWindowUs += dtUs;
+  if (oledWindowUs >= 500000) { oled.load = oledBusyUs / oledWindowUs; oledBusyUs = 0; oledWindowUs = 0; }
 }
 
 // Les LIBELLES viennent du core (keys::describe) : ce que les huit ecrans du boitier
@@ -831,23 +889,27 @@ const KIND = { None: 0, Note: 1, Step: 2, Substep: 3, Track: 4, Degree: 5, Quali
 function keyInfo(black, i) {
   const f = M._nidmi_key_flags(black ? 1 : 0, i), kind = (f >> 4) & 15, value = f >> 8;
   const label = kind === KIND.Track ? trackName(value) : str(M._nidmi_key_label(black ? 1 : 0, i));
-  return { label, lit: !!(f & 1), cur: !!(f & 2), kind };
+  return { label, lit: !!(f & 1), cur: !!(f & 2), head: !!(f & 4), kind };
 }
 function keyLabels() {
   const mode = keyMode(), sh = isShift();
   const inSub = M._nidmi_cur_sub() >= 0;
   M._nidmi_keys_describe();
   const white = whiteKeys.map((_, i) => keyInfo(false, i)), black = blackKeys.map((_, k) => keyInfo(true, k));
+  // Les LED sous les touches sont en option : sans elles, tout passe par les OLED.
+  const leds = document.getElementById("key-leds")?.checked;
   whiteKeys.forEach((k, i) => {
     k.querySelector("span").textContent = white[i].label;
-    k.classList.toggle("lit", white[i].lit);
-    k.classList.toggle("cur", white[i].cur);
+    k.classList.toggle("lit", !!leds && white[i].lit);
+    k.classList.toggle("cur", !!leds && white[i].cur);
+    k.classList.toggle("head", !!leds && white[i].head);
   });
   blackKeys.forEach((b, k) => {
     b.querySelector("span").textContent = black[k].kind === KIND.Note ? "" : black[k].label;
     b.classList.toggle("fn", black[k].kind === KIND.Clipboard || black[k].kind === KIND.Extension);
   });
   drawOleds(white, black);
+  pumpOleds();
   const text = {
     play: "<b>PLAY</b> the track's instrument · REC = edit what the view shows · ⇧REC (or Enter + Space) = live",
     live: "<b>LIVE</b> — plays and records at the current step · STOP to leave",
@@ -856,7 +918,8 @@ function keyLabels() {
     notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances · ⇧ + black keys = clipboard",
     harmony: "<b>REC · HARMONY</b> — degrees, qualities, bar ± · black keys = extensions",
   }[mode];
-  document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · " : "") + text;
+  document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · " : "") + text
+    + ` <span class="busload">· OLED bus ${Math.round(oled.load * 100)} %${oled.queue.length ? ` · ${oled.queue.length} pages waiting` : ""}</span>`;
 }
 
 // --- Clavier de l'ordinateur ------------------------------------------------------

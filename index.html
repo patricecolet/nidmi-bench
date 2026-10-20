@@ -63,6 +63,8 @@ canvas#screen { width: 100%; height: auto; }
 .wk.lit { background: #9fdcb0; }
 .wk.down, .bk.down { filter: brightness(.8); }
 .wk.cur { box-shadow: inset 0 -5px 0 var(--accent); }
+.wk.head { background: #f3c6c2; }
+.busload { color: #5b636c; }
 .wk span { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; color: #555; font-size: 10px; }
 .bk { position: absolute; top: 0; height: 58%; background: var(--key-b); border-radius: 0 0 4px 4px; border: 1px solid #000; z-index: 1; cursor: pointer; }
 .bk span { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; color: #b8bec4; font-size: 9px; line-height: 1.1; }
@@ -116,6 +118,8 @@ select, input { font: inherit; background: var(--plate); color: var(--ink); bord
     <label>Screen <select id="res"><option value="480x320">4.0″ 480×320</option><option value="800x480">7.0″ 800×480</option></select></label>
     <label>Labels <select id="layout"><option value="side">beside the knobs</option><option value="band">bottom strip</option></select></label>
     <label><input type="checkbox" id="clicks" checked> Detent clicks</label>
+    <label><input type="checkbox" id="key-leds"> Key LEDs</label>
+    <label>OLED bus <select id="oled-bus"><option value="400000">400 kHz</option><option value="1000000">1 MHz</option></select></label>
     <label>Output <select id="midi-out"><option value="">browser sound</option></select></label>
     <span id="midi-in-status"></span>
   </div>
