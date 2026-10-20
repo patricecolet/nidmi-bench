@@ -16,7 +16,7 @@ const { default: createNidmi } = await import(`./nidmi.js?v=${STAMP}`);
 const M = await createNidmi({ locateFile: (path) => `${path}?v=${STAMP}` });
 
 // Et s'il manque quand meme quelque chose, on le dit au lieu d'un ecran noir.
-const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active"];
+const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active", "_nidmi_keys_describe"];
 const missing = REQUIRED.filter((f) => typeof M[f] !== "function");
 if (missing.length) {
   document.body.insertAdjacentHTML("afterbegin",
@@ -504,13 +504,9 @@ function keyMode() {
 // Clavier diatonique : 16 blanches = 16 degres consecutifs de la gamme que le moteur
 // UTILISE (tonalite effective du pattern) ; celle du projet quand l'harmonie est coupee.
 // Sinon taper mi en do mineur ecrirait un mi que la lecture jouerait mi bemol.
-function whiteMidi(i) {
-  const harm = M._nidmi_harmony_active();
-  const sc = harm ? M._nidmi_key_scale() : M._nidmi_master_scale(), cnt = Math.max(1, M._nidmi_scale_size(sc));
-  const base = 48 + (harm ? M._nidmi_key_root() : M._nidmi_master_root());
-  return Math.min(127, base + 12 * Math.floor(i / cnt) + M._nidmi_scale_interval(sc, i % cnt));
-}
-const blackMidi = (k) => Math.min(127, whiteMidi(BLACK_LEFT[k]) + 1);
+// La regle vit dans le core (keys::whiteMidi) : le firmware ne la recode pas.
+const whiteMidi = (i) => M._nidmi_white_midi(i);
+const blackMidi = (k) => M._nidmi_black_midi(k);
 
 // Un pas existant garde sa velocite et sa duree : la touche ne change que la hauteur.
 function writeStep(row, step, bar, midi) {
@@ -737,12 +733,14 @@ function pressWhite(i) {
   return null;
 }
 function pressBlack(k) {
+  // Une noire sans note chromatique entre ses deux blanches est muette (keys::kNoNote).
+  const muted = blackMidi(k) === 255;
   switch (keyMode()) {
-    case "play":    return playKey(blackMidi(k));
-    case "live":    return liveKey(blackMidi(k));
+    case "play":    return muted ? null : playKey(blackMidi(k));
+    case "live":    return muted ? null : liveKey(blackMidi(k));
     case "notes":   // ROLL : les noires sont des alterations, ⇧ donne le presse-papier
       if (isShift()) { clipboardKey(k); return null; }
-      return writeNoteKey(blackMidi(k));
+      return muted ? null : writeNoteKey(blackMidi(k));
     case "steps":   clipboardKey(k); return null;
     case "harmony": harmonyBlack(k); return null;
   }
@@ -788,43 +786,68 @@ function placeBlackKeys() {
 placeBlackKeys();
 addEventListener("resize", placeBlackKeys);
 
+// LES HUIT OLED du boitier, 0,96" 128x64 SSD1306, une par paire de blanches : la noire
+// entre les deux au milieu, celle de la frontiere au bord droit. Monochrome, a leur vraie
+// definition, agrandies sans lissage : on juge la lisibilite avant de souder.
+const oledEls = [];
+(function makeOleds() {
+  const host = document.getElementById("oleds");
+  if (!host) return;
+  for (let s = 0; s < 8; s++) {
+    const c = document.createElement("canvas");
+    c.width = 128; c.height = 64;
+    host.appendChild(c);
+    oledEls.push(c.getContext("2d"));
+  }
+})();
+function oledText(o, text, x, y, align, size, inverted) {
+  o.font = `bold ${size}px ui-monospace, Menlo, monospace`;
+  let t = text;
+  while (t.length > 1 && o.measureText(t).width > 60) t = t.slice(0, -1);
+  const w = o.measureText(t).width, x0 = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  if (inverted) { o.fillStyle = "#fff"; o.fillRect(Math.floor(x0) - 2, y - size + 1, Math.ceil(w) + 4, size + 2); }
+  o.fillStyle = inverted ? "#000" : "#fff";
+  o.fillText(t, x0, y);
+}
+function drawOleds(white, black) {
+  oledEls.forEach((o, s) => {
+    o.fillStyle = "#000"; o.fillRect(0, 0, 128, 64);
+    for (let j = 0; j < 2; j++) {
+      const k = white[2 * s + j], cx = 32 + 64 * j;
+      if (k.label) oledText(o, k.label, cx, 56, "center", 14, k.lit);
+      if (k.cur) { o.fillStyle = "#fff"; o.fillRect(cx - 20, 61, 40, 2); }
+    }
+    BLACK_LEFT.forEach((w, b) => {
+      if (w !== 2 * s && w !== 2 * s + 1 || !black[b].label) return;
+      oledText(o, black[b].label, w === 2 * s ? 64 : 126, 18, w === 2 * s ? "center" : "right", 11, black[b].lit);
+    });
+    o.fillStyle = "#333"; o.fillRect(0, 31, 128, 1);
+  });
+}
+
+// Les LIBELLES viennent du core (keys::describe) : ce que les huit ecrans du boitier
+// afficheront. Une piste prend le nom que lui donne l'hote (le profil d'appareil).
+const KIND = { None: 0, Note: 1, Step: 2, Substep: 3, Track: 4, Degree: 5, Quality: 6, Bar: 7, Clipboard: 8, Extension: 9 };
+function keyInfo(black, i) {
+  const f = M._nidmi_key_flags(black ? 1 : 0, i), kind = (f >> 4) & 15, value = f >> 8;
+  const label = kind === KIND.Track ? trackName(value) : str(M._nidmi_key_label(black ? 1 : 0, i));
+  return { label, lit: !!(f & 1), cur: !!(f & 2), kind };
+}
 function keyLabels() {
   const mode = keyMode(), sh = isShift();
-  const row = M._nidmi_cur_row(), bar = M._nidmi_cur_bar(), cur = M._nidmi_cur_step();
-  const page = Math.floor(cur / 16) * 16, n = M._nidmi_row_steps(row);
   const inSub = M._nidmi_cur_sub() >= 0;
-  const subIdx = inSub ? M._nidmi_step_sub(row, bar, cur) : 255;
-  const subLen = subIdx !== 255 ? M._nidmi_sub_len(subIdx) : 0;
-  const tracks = M._nidmi_track_count(), curTrack = M._nidmi_cur_track();
+  M._nidmi_keys_describe();
+  const white = whiteKeys.map((_, i) => keyInfo(false, i)), black = blackKeys.map((_, k) => keyInfo(true, k));
   whiteKeys.forEach((k, i) => {
-    let label = "", lit = false, isCur = false;
-    if (sh) { label = i < tracks ? trackName(i) : ""; lit = i === curTrack; }
-    else if (mode === "notes" || mode === "play" || mode === "live") label = noteName(whiteMidi(i));
-    else if (mode === "steps" && inSub) { label = i < subLen ? `s${i + 1}` : ""; }
-    else if (mode === "steps") {
-      const s = page + i;
-      if (s < n) {
-        const p = M._nidmi_step(row, bar, s), dm = M._nidmi_row_display(row);
-        label = String(s + 1);
-        if (M._nidmi_row_kind(row) === 1) lit = M._nidmi_curve_point_on_step(row, bar, s) >= 0;
-        else lit = dm === DM.Accent ? !!(p & 2) : dm === DM.Swing ? !!(p & 8) : dm === DM.Fill ? !!(p & 48) : !!(p & 1);
-        isCur = s === cur;
-      }
-    } else if (mode === "harmony") {
-      label = i <= 6 ? ROMAN[i] : i <= 12 ? QUALITY[i - 7] : i === 13 ? "Bar−" : i === 14 ? "Bar+" : "";
-    }
-    k.querySelector("span").textContent = label;
-    k.classList.toggle("lit", lit);
-    k.classList.toggle("cur", isCur);
+    k.querySelector("span").textContent = white[i].label;
+    k.classList.toggle("lit", white[i].lit);
+    k.classList.toggle("cur", white[i].cur);
   });
   blackKeys.forEach((b, k) => {
-    let label = "", fn = false;
-    if (mode === "steps") { label = k === 7 ? (sh ? "Cut" : "Copy") : k === 8 ? "Paste" : k === 10 ? "Clear" : ""; fn = !!label; }
-    else if (mode === "notes" && sh) { label = k === 7 ? "Copy" : k === 8 ? "Paste" : k === 10 ? "Clear" : ""; fn = !!label; }
-    else if (mode === "harmony") { label = EXT_NAMES[k]; fn = true; }
-    b.querySelector("span").textContent = label;
-    b.classList.toggle("fn", fn);
+    b.querySelector("span").textContent = black[k].kind === KIND.Note ? "" : black[k].label;
+    b.classList.toggle("fn", black[k].kind === KIND.Clipboard || black[k].kind === KIND.Extension);
   });
+  drawOleds(white, black);
   const text = {
     play: "<b>PLAY</b> the track's instrument · REC = edit what the view shows · ⇧REC (or Enter + Space) = live",
     live: "<b>LIVE</b> — plays and records at the current step · STOP to leave",
@@ -1449,7 +1472,7 @@ function frame() {
 
 function drawFrame() {
   // REC + PLAY : sur une lane, Valeur enregistre le geste au lieu d'editer un point.
-  M._nidmi_set_rec_live(host.rec === "live" ? 1 : 0);
+  M._nidmi_set_rec({ off: 0, grid: 1, live: 2 }[host.rec]);
   M._nidmi_describe();
   const knobs = [];
   for (let i = 0; i < 6; i++) {

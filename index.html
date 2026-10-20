@@ -68,6 +68,10 @@ canvas#screen { width: 100%; height: auto; }
 .bk span { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; color: #b8bec4; font-size: 9px; line-height: 1.1; }
 .bk.fn span { color: var(--lent); }
 .keymode { color: var(--muted); font-size: 11px; }
+/* Les huit OLED au-dessus du clavier : chacune couvre deux blanches. */
+.oleds { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; padding: 0 3px; }
+.oleds canvas { width: 100%; aspect-ratio: 2 / 1; background: #000; border: 2px solid #0a0b0d; border-radius: 3px;
+  image-rendering: pixelated; }
 .keymode b { color: var(--ink); }
 
 .help { color: var(--muted); display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 6px 24px; }
@@ -104,6 +108,7 @@ select, input { font: inherit; background: var(--plate); color: var(--ink); bord
       </div>
     </div>
     <div class="keymode" id="keymode"></div>
+    <div class="oleds" id="oleds" title="Eight 0.96-inch 128x64 OLEDs, one per pair of white keys"></div>
     <div class="keys" id="keys"></div>
   </div>
 
