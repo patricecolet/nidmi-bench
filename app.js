@@ -492,12 +492,14 @@ const EXT_BITS = [1 << 7, 1 << 8, 1 << 9, 1 << 10, 1 << 0, 1 << 1, 1 << 2, 1 << 
 const EXT_NAMES = ["b7", "7", "b5", "#5", "9", "11", "13", "b9", "#9", "#11", "b13"];
 
 function keyMode() {
+  // HARMONY et la grille : le clavier d'ACCORDS, qu'on joue (sans REC) ou qu'on ecrive.
+  if (M._nidmi_view() === 3 || M._nidmi_view() === 6) return "harmony";
   if (host.rec === "off") return "play";
   if (host.rec === "live") return "live";
   const v = M._nidmi_view();
   if (v === 0 || v === 2) return "steps";
   if (v === 1) return "notes";
-  if (v === 3) return "harmony";
+  if (v === 3 || v === 6) return "harmony";
   return "play";
 }
 
@@ -679,39 +681,56 @@ function pressCurveStep(row, bar, step) {
   };
 }
 
-// HARMONIE : blanches 1-7 = degres du slot sous le curseur, 8-13 = qualites,
-// 14/15 = mesure -/+. Le mode harmonique d'une row se regle sous Row ▸ appui.
-function chordUnderCursor() {
-  const cur = M._nidmi_cur_slot(), len = M._nidmi_chord_len();
-  const src = cur < len ? cur : len - 1;
-  if (src < 0) return { cur, len, deg: 1, q: 0, ext: 0, dur: 4, bass: 0 };
-  const p = M._nidmi_chord(src), x = M._nidmi_chord_extra(src);
-  return { cur, len, deg: p & 15, q: (p >> 4) & 15, ext: p >>> 8, dur: x & 255, bass: (x >> 8) & 255 };
+// LE CLAVIER D'ACCORDS (keys::chordFromKeys) : la main gauche choisit le DEGRE (blanches
+// 1-7), la droite la COULEUR (blanches 8-16 : maj min dim sus4 7 maj7 9 11 13) et les
+// ALTERATIONS (noires). On les tient dans n'importe quel ordre. Sans REC, la piste joue
+// l'accord ; avec REC, il s'ecrit dans le slot sous le curseur, qui avance : on tape une
+// grille accord apres accord.
+const chordKeys = { whites: 0, blacks: 0, degree: 0, slot: -1, notes: [], ch: 1 };
+function syncHeld() { M._nidmi_set_held(chordKeys.whites, chordKeys.blacks); }
+function chordColors() { return chordKeys.whites >> 7; }
+function chordSound(on) {
+  chordKeys.notes.forEach((n) => noteOff(chordKeys.ch, n));
+  chordKeys.notes = [];
+  if (!on || !chordKeys.degree) return;
+  const count = M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
+  chordKeys.ch = M._nidmi_row_channel(M._nidmi_cur_row()) + 1;
+  for (let i = 0; i < count; i++) { const n = M._nidmi_chord_built_note(i); noteOn(chordKeys.ch, n, 90); chordKeys.notes.push(n); }
 }
-function postChord(c) {
-  cmd(CMD.SetChordSlot, { a: c.cur, b: c.deg, c: c.q, d: c.ext & 255, len: (c.ext >> 8) & 255, e: c.bass, f: c.dur });
-  if (c.cur >= c.len) cmd(CMD.SetChordProgressionLen, { a: c.cur + 1 });
+// L'accord tenu change (une couleur arrive) : on le rejoue, ou on le reecrit.
+function chordRefresh() {
+  if (!chordKeys.degree) return;
+  if (host.rec === "grid") {
+    M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
+    M._nidmi_chord_write(chordKeys.slot, now());
+  } else chordSound(true);
 }
+// Une souris n'a qu'un doigt : dans le banc, COULEURS et ALTERATIONS se verrouillent d'un
+// clic et se liberent d'un autre, comme SHIFT. Sur le boitier, on les tiendra.
 function harmonyWhite(i) {
-  const bar = M._nidmi_cur_bar();
-  if (i === 13 || i === 14) {
-    M._nidmi_set_bar(Math.max(0, Math.min(M._nidmi_num_bars() - 1, bar + (i === 13 ? -1 : 1))));
-    return;
-  }
-  if (M._nidmi_cur_lane() !== 0 || i > 12) return;
-  const c = chordUnderCursor();
-  if (i <= 6) c.deg = i + 1; else c.q = i - 7;
-  postChord(c);
+  if (i >= 7) { chordKeys.whites ^= 1 << i; syncHeld(); chordRefresh(); return null; }
+  chordKeys.whites |= 1 << i; syncHeld();
+  if (i < 7) {
+    chordKeys.degree = i + 1;
+    if (host.rec === "grid") {
+      const cur = M._nidmi_cur_slot();
+      chordKeys.slot = cur;
+      M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
+      M._nidmi_chord_write(cur, now());
+      chordSound(true); setTimeout(() => chordSound(false), 250);   // l'entendre en l'ecrivant
+      M._nidmi_set_slot(cur + 1);
+    } else chordSound(true);
+  } else chordRefresh();
+  return () => {
+    chordKeys.whites &= ~(1 << i); syncHeld();
+    if (i < 7 && chordKeys.degree === i + 1) { if (host.rec !== "grid") chordSound(false); chordKeys.degree = 0; }
+  };
 }
 function harmonyBlack(k) {
-  if (M._nidmi_cur_lane() !== 0) return;
-  const c = chordUnderCursor(), bit = EXT_BITS[k];
-  c.ext ^= bit;
-  if (c.ext & bit) {   // 7e et quinte alteree s'excluent dans leur groupe
-    if (k === 0) c.ext &= ~EXT_BITS[1]; else if (k === 1) c.ext &= ~EXT_BITS[0];
-    else if (k === 2) c.ext &= ~EXT_BITS[3]; else if (k === 3) c.ext &= ~EXT_BITS[2];
-  }
-  postChord(c);
+  if (k >= 8) return null;
+  chordKeys.blacks ^= 1 << k; syncHeld();
+  chordRefresh();
+  return null;
 }
 
 // ⇧ + blanche N = la PISTE N, dans toutes les vues et tous les modes : changer
@@ -728,7 +747,7 @@ function pressWhite(i) {
     case "live":    return liveKey(whiteMidi(i));
     case "notes":   return writeNoteKey(whiteMidi(i));
     case "steps":   return pressStep(i);
-    case "harmony": harmonyWhite(i); return null;
+    case "harmony": return harmonyWhite(i);
   }
   return null;
 }
@@ -742,7 +761,7 @@ function pressBlack(k) {
       if (isShift()) { clipboardKey(k); return null; }
       return muted ? null : writeNoteKey(blackMidi(k));
     case "steps":   clipboardKey(k); return null;
-    case "harmony": harmonyBlack(k); return null;
+    case "harmony": return harmonyBlack(k);
   }
   return null;
 }
@@ -933,7 +952,9 @@ function keyLabels() {
     steps: inSub ? "<b>REC · SUBSTEPS</b> — white keys = substeps · black keys = clipboard"
       : "<b>REC · STEPS</b> — white key = step · hold it and turn a knob to edit that step · black keys = clipboard",
     notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances · ⇧ + black keys = clipboard",
-    harmony: "<b>REC · HARMONY</b> — degrees, qualities, bar ± · black keys = extensions",
+    harmony: host.rec === "grid"
+      ? "<b>REC · CHORDS</b> — a degree writes its chord at the cursor, which advances · hold colours (8-16) and alterations (black) with it"
+      : "<b>CHORDS</b> — left hand: degrees · right hand: colours (maj min dim sus4 7 maj7 9 11 13) · black keys: alterations",
   }[mode];
   document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · " : "") + text
     + ` <span class="busload">· OLED bus ${Math.round(oled.load * 100)} %${oled.queue.length ? ` · ${oled.queue.length} pages waiting` : ""}</span>`;
