@@ -1448,11 +1448,12 @@ function drawHarmony(area) {
     g.fillStyle = i === playing && M._nidmi_is_playing() ? "#1e3d27" : "#141a1f";
     g.fillRect(x, y, chipW, chipH);
     if (i === cur) { g.strokeStyle = C.text; g.lineWidth = 1.5; g.strokeRect(x + 0.75, y + 0.75, chipW - 1.5, chipH - 1.5); }
-    g.font = FONT(13, true); g.fillStyle = C.text;
-    g.fillText(ROMAN[(c & 15) - 1] || "?", x + 6, y + 18);
-    g.font = FONT(10); g.fillStyle = C.muted;
-    g.fillText(`${QUALITY[(c >> 4) & 15]}${c >>> 8 ? " +" : ""}`, x + 6, y + 31);
-    g.fillText(`${dur} b`, x + 6, y + 41);
+    // L'accord comme sur une grille, son degre dessous, sa duree.
+    g.font = FONT(13, true);
+    fitText(str(M._nidmi_chord_symbol(i, 0)), x + 5, y + 18, chipW - 8, C.text);
+    g.font = FONT(10);
+    fitText(str(M._nidmi_chord_symbol(i, 1)), x + 5, y + 31, chipW - 8, C.muted);
+    g.fillStyle = C.muted; g.fillText(`${dur} b`, x + 5, y + 41);
   }
 }
 
