@@ -134,6 +134,8 @@ select, input { font: inherit; background: var(--plate); color: var(--ink); bord
     <div><b>Device keyboard</b>: without REC it plays the track. REC (or Enter): in PATTERN the white keys are the steps, in ROLL each key writes its note and advances. REC + PLAY (⇧REC, or Enter + Space): live recording.</div>
   </div>
 </main>
-<script type="module" src="app.js"></script>
+<!-- app.js toujours frais : un script garde en cache (GitHub Pages : 10 min) pourrait ne
+     pas correspondre au nidmi.wasm qu'il charge. -->
+<script type="module">import(`./app.js?v=${Date.now()}`);</script>
 </body>
 </html>
