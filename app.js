@@ -832,7 +832,8 @@ function drawOleds(white, black) {
       // Curseur : deux crochets ; tete de lecture : une barre pleine sous la touche.
       o.fillStyle = "#fff";
       if (k.cur) { o.fillRect(cx - 28, 38, 2, 20); o.fillRect(cx + 26, 38, 2, 20); }
-      if (k.head) o.fillRect(cx - 30, 60, 60, 4);
+      // Sur une note, la tete passe en HAUT, loin du nom ; sur un pas, sous son numero.
+      if (k.head) o.fillRect(cx - 30, k.kind === KIND.Note ? 0 : 60, 60, k.kind === KIND.Note ? 3 : 4);
     }
     BLACK_LEFT.forEach((w, b) => {
       if (w !== 2 * s && w !== 2 * s + 1 || !black[b].label) return;
