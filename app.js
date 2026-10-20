@@ -727,7 +727,7 @@ function harmonyWhite(i) {
   };
 }
 function harmonyBlack(k) {
-  if (k >= 8) return null;
+  if (k >= 9) return null;
   chordKeys.blacks ^= 1 << k; syncHeld();
   chordRefresh();
   return null;
@@ -954,7 +954,7 @@ function keyLabels() {
     notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances · ⇧ + black keys = clipboard",
     harmony: host.rec === "grid"
       ? "<b>REC · CHORDS</b> — a degree writes its chord at the cursor, which advances · hold colours (8-16) and alterations (black) with it"
-      : "<b>CHORDS</b> — left hand: degrees · right hand: colours (maj min dim sus4 7 maj7 9 11 13) · black keys: alterations",
+      : "<b>CHORDS</b> — left hand: degrees · right hand: colours (maj min dim sus4 7 maj7 9 11 13) · black keys: alterations and 6",
   }[mode];
   document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · " : "") + text
     + ` <span class="busload">· OLED bus ${Math.round(oled.load * 100)} %${oled.queue.length ? ` · ${oled.queue.length} pages waiting` : ""}</span>`;
