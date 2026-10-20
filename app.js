@@ -136,8 +136,19 @@ let audio = null;
 let midiOut = null;
 const voices = new Map();   // "canal:note" -> { osc, gain, rel }
 
+// Toutes les voix passent par un LIMITEUR : un accord de six sons ou la pad sur la
+// basse et la batterie ne saturent plus.
+let master = null;
 function ensureAudio() {
-  if (!audio) audio = new AudioContext();
+  if (!audio) {
+    audio = new AudioContext();
+    const lim = audio.createDynamicsCompressor();
+    lim.threshold.value = -6; lim.knee.value = 6; lim.ratio.value = 20;
+    lim.attack.value = 0.002; lim.release.value = 0.15;
+    master = audio.createGain();
+    master.gain.value = 0.8;
+    master.connect(lim).connect(audio.destination);
+  }
   if (audio.state === "suspended") audio.resume();
 }
 document.addEventListener("pointerdown", ensureAudio, { capture: true });
@@ -156,7 +167,7 @@ let noiseBuf = null;
 function drum(note, vel) {
   const t = audio.currentTime, out = audio.createGain();
   out.gain.value = 0.6 * vel / 127;
-  out.connect(audio.destination);
+  out.connect(master);
   if (note <= 36) {
     const o = audio.createOscillator(), e = audio.createGain();
     o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
@@ -189,7 +200,7 @@ function noteOn(ch, note, vel) {
   filt.type = "lowpass"; filt.frequency.value = tb.cut;
   gain.gain.setValueAtTime(0, t);
   gain.gain.linearRampToValueAtTime(tb.lvl * vel / 127, t + 0.005);
-  osc.connect(filt).connect(gain).connect(audio.destination);
+  osc.connect(filt).connect(gain).connect(master);
   osc.start(t);
   voices.set(ch + ":" + note, { osc, gain, rel: tb.rel });
 }
@@ -695,7 +706,9 @@ function chordSound(on) {
   if (!on || !chordKeys.degree) return;
   const count = M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
   chordKeys.ch = M._nidmi_row_channel(M._nidmi_cur_row()) + 1;
-  for (let i = 0; i < count; i++) { const n = M._nidmi_chord_built_note(i); noteOn(chordKeys.ch, n, 90); chordKeys.notes.push(n); }
+  // Au-dela de trois sons, chaque voix baisse : l'accord garde le volume d'une triade.
+  const vel = Math.round(90 * Math.sqrt(3 / Math.max(3, count)));
+  for (let i = 0; i < count; i++) { const n = M._nidmi_chord_built_note(i); noteOn(chordKeys.ch, n, vel); chordKeys.notes.push(n); }
 }
 // L'accord tenu change (une couleur arrive) : on le rejoue, ou on le reecrit.
 function chordRefresh() {
