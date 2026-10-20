@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nidmi ergonomics bench</title>
+<style>
+/* Facade du boitier : 3 molettes de chaque cote de l'ecran, boutons en colonnes,
+   clavier dessous (nidmi-seq-hardware, implantation.scad). Plexi sombre, ecran au centre. */
+:root {
+  --case: #1b1e22; --plate: #24282d; --edge: #363b42; --ink: #e4e7ea; --muted: #8b939c;
+  --pushed: #5fd07a; --lent: #f0a43a; --accent: #5fb7c0; --silk: #c9ced3;
+  --key-w: #e9e6df; --key-b: #22252a; --led: #ff5a4f;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #101215; color: var(--ink); font: 13px/1.4 var(--mono); }
+main { max-width: 1220px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+.case { background: var(--case); border: 1px solid var(--edge); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 18px;
+  box-shadow: inset 0 1px 0 #2e3339, 0 20px 40px #0008; }
+.top { display: grid; grid-template-columns: auto auto 1fr auto auto; gap: 18px; align-items: center; justify-items: center; }
+/* Les molettes s'etalent sur la hauteur de l'ecran : chacune fait face a sa case. */
+.knobcol { display: flex; flex-direction: column; justify-content: space-around; align-self: stretch; padding-block: 14px; }
+.btncol { display: flex; flex-direction: column; gap: 10px; }
+.screen-wrap { background: #000; border: 6px solid #0a0b0d; border-radius: 6px; line-height: 0; width: 100%; max-width: 760px; }
+canvas#screen { width: 100%; height: auto; }
+
+/* L'encodeur virtuel : anneau qu'on tourne, capuchon qu'on enfonce. */
+.knob { position: relative; width: 84px; height: 84px; touch-action: none; user-select: none; cursor: grab; margin-bottom: 18px; }
+.knob:active { cursor: grabbing; }
+.knob .ring { position: absolute; inset: 0; }
+.knob .body { position: absolute; inset: 12px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #4a5058, #2a2e34 70%);
+  border: 1px solid #111; box-shadow: 0 3px 6px #0009; }
+.knob .body::after { content: ""; position: absolute; left: 50%; top: 3px; width: 3px; height: 12px; margin-left: -1.5px; border-radius: 2px; background: var(--ink); }
+.knob .cap { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%;
+  border: 1px solid #0c0d0f; background: radial-gradient(circle at 40% 35%, #5a616a, #30353b); cursor: pointer; padding: 0;
+  box-shadow: 0 3px 0 #0b0c0e, 0 4px 6px #0008; transition: transform .06s, box-shadow .06s; }
+.knob .cap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.knob .cap.latched { transform: translateY(3px); box-shadow: 0 0 0 #0b0c0e, 0 0 10px var(--pushed); background: radial-gradient(circle at 40% 35%, #6fdc89, #2f7d3a); }
+.knob .cap.flash { transform: translateY(3px); box-shadow: 0 0 0 #0b0c0e; }
+.knob.lent .body::after { background: var(--lent); }
+.knob.absent { opacity: .45; }
+/* Serigraphie : le role de BASE ne change jamais, il peut donc etre imprime. */
+.knob .silk { position: absolute; bottom: -18px; left: -10px; right: -10px; text-align: center; color: var(--silk); font: 600 10px var(--mono); letter-spacing: .12em; }
+.knob .key { position: absolute; top: -14px; left: 0; right: 0; text-align: center; color: #5b636c; font-size: 9px; }
+
+/* Boutons PB86 */
+.pb { width: 70px; height: 34px; border-radius: 6px; border: 1px solid #0c0d0f; background: linear-gradient(#3a3f46, #2b2f35); color: var(--ink);
+  font: 600 11px var(--mono); letter-spacing: .06em; cursor: pointer; box-shadow: 0 3px 0 #0b0c0e; position: relative; }
+.pb:active, .pb.on { transform: translateY(2px); box-shadow: 0 1px 0 #0b0c0e; }
+.pb.on { color: #fff; }
+.pb:disabled { opacity: .5; cursor: default; }
+.pb .led { position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: #3a1512; }
+.pb.on .led { background: var(--led); box-shadow: 0 0 6px var(--led); }
+.pb.play.on .led, .pb.view.on .led { background: var(--pushed); box-shadow: 0 0 6px var(--pushed); }
+.pb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pb.blink .led { animation: blink .6s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+
+/* Clavier 27 touches : 16 blanches, 11 noires */
+.keys { position: relative; height: 104px; display: flex; gap: 3px; touch-action: none; user-select: none; }
+.wk { flex: 1; background: var(--key-w); border-radius: 0 0 5px 5px; border: 1px solid #999; cursor: pointer; position: relative; }
+.wk.lit { background: #9fdcb0; }
+.wk.down, .bk.down { filter: brightness(.8); }
+.wk.cur { box-shadow: inset 0 -5px 0 var(--accent); }
+.wk span { position: absolute; bottom: 8px; left: 0; right: 0; text-align: center; color: #555; font-size: 10px; }
+.bk { position: absolute; top: 0; height: 58%; background: var(--key-b); border-radius: 0 0 4px 4px; border: 1px solid #000; z-index: 1; cursor: pointer; }
+.bk span { position: absolute; bottom: 5px; left: 0; right: 0; text-align: center; color: #b8bec4; font-size: 9px; line-height: 1.1; }
+.bk.fn span { color: var(--lent); }
+.keymode { color: var(--muted); font-size: 11px; }
+.keymode b { color: var(--ink); }
+
+.help { color: var(--muted); display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 6px 24px; }
+.help b { color: var(--ink); font-weight: 600; }
+.bar { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; color: var(--muted); }
+.bar label { display: flex; gap: 6px; align-items: center; }
+select, input { font: inherit; background: var(--plate); color: var(--ink); border: 1px solid var(--edge); border-radius: 4px; padding: 3px 6px; }
+@media (max-width: 900px) {
+  .top { grid-template-columns: auto 1fr auto; }
+  .btncol { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+  .btncol.left { grid-column: 1 / -1; grid-row: 2; }
+  .btncol.right { grid-column: 1 / -1; grid-row: 3; }
+}
+</style>
+</head>
+<body>
+<main>
+  <div class="case">
+    <div class="top">
+      <div class="btncol left">
+        <button class="pb view" id="b-row">ROW<i class="led"></i></button>
+        <button class="pb view" id="b-harmony">HARMONY<i class="led"></i></button>
+        <button class="pb view" id="b-projet">PROJECT<i class="led"></i></button>
+        <button class="pb" id="b-shift">SHIFT<i class="led"></i></button>
+      </div>
+      <div class="knobcol" id="kl"></div>
+      <div class="screen-wrap"><canvas id="screen" width="480" height="320"></canvas></div>
+      <div class="knobcol" id="kr"></div>
+      <div class="btncol right">
+        <button class="pb play" id="b-play">PLAY<i class="led"></i></button>
+        <button class="pb" id="b-stop">STOP<i class="led"></i></button>
+        <button class="pb" id="b-rec">REC<i class="led"></i></button>
+        <button class="pb" id="b-export" disabled title="Not wired yet">EXPORT<i class="led"></i></button>
+      </div>
+    </div>
+    <div class="keymode" id="keymode"></div>
+    <div class="keys" id="keys"></div>
+  </div>
+
+  <div class="bar">
+    <label>Screen <select id="res"><option value="480x320">4.0″ 480×320</option><option value="800x480">7.0″ 800×480</option></select></label>
+    <label>Labels <select id="layout"><option value="side">beside the knobs</option><option value="band">bottom strip</option></select></label>
+    <label><input type="checkbox" id="clicks" checked> Detent clicks</label>
+    <label>Output <select id="midi-out"><option value="">browser sound</option></select></label>
+    <span id="midi-in-status"></span>
+  </div>
+
+  <div class="help">
+    <div><b>Turn</b>: drag in a circle on the knob, or scroll over it (trackpad, mouse wheel).</div>
+    <div><b>Push</b>: click the cap. It stays down while its context is open; click again to close it.</div>
+    <div><b>Computer keyboard</b>: Q/A W/S E/D turn the left knobs, R/F T/G Y/H the right ones, 1 to 6 push them, Shift holds SHIFT (the SHIFT button latches: click to engage, click again to release), Space starts or stops, Enter arms REC.</div>
+    <div><b>Curves</b>: on a lane, Value adds or sets the point of the step, Velocity its shape (hold, log, linear, exp, S), Length its position. In LIVE, Value records the gesture.</div>
+    <div><b>Tracks</b>: one page per instrument. ⇧ + white key N opens track N (latch SHIFT, or hold Shift, then click the key).</div>
+    <div><b>Device keyboard</b>: without REC it plays the track. REC (or Enter): in PATTERN the white keys are the steps, in ROLL each key writes its note and advances. REC + PLAY (⇧REC, or Enter + Space): live recording.</div>
+  </div>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
