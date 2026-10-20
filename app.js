@@ -16,7 +16,7 @@ const { default: createNidmi } = await import(`./nidmi.js?v=${STAMP}`);
 const M = await createNidmi({ locateFile: (path) => `${path}?v=${STAMP}` });
 
 // Et s'il manque quand meme quelque chose, on le dit au lieu d'un ecran noir.
-const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active", "_nidmi_keys_describe"];
+const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active", "_nidmi_keys_describe", "_nidmi_select_page"];
 const missing = REQUIRED.filter((f) => typeof M[f] !== "function");
 if (missing.length) {
   document.body.insertAdjacentHTML("afterbegin",
@@ -452,7 +452,7 @@ function playDown() {
     if (!M._nidmi_is_playing()) M._nidmi_play(now());
     return;
   }
-  if (!M._nidmi_is_playing()) { M._nidmi_play(now()); return; }
+  if (!M._nidmi_is_playing()) { M._nidmi_set_follow(1); M._nidmi_play(now()); return; }
   Object.assign(playHold, { down: true, held: false });
   playHold.timer = setTimeout(() => { playHold.held = true; cmd(CMD.SetFillHeld, { x: 1 }); }, 220);
 }
@@ -773,7 +773,10 @@ function pressBlack(k) {
     case "notes":   // ROLL : les noires sont des alterations, ⇧ donne le presse-papier
       if (isShift()) { clipboardKey(k); return null; }
       return muted ? null : writeNoteKey(blackMidi(k));
-    case "steps":   clipboardKey(k); return null;
+    case "steps":   // les PAGES, et le presse-papier
+      { M._nidmi_keys_describe(); const f = M._nidmi_key_flags(1, k);
+        if (((f >> 4) & 15) === KIND.Bar) { M._nidmi_select_page(f >> 8); return null; } }
+      clipboardKey(k); return null;
     case "harmony": return harmonyBlack(k);
   }
   return null;
@@ -886,6 +889,8 @@ function drawOleds(white, black) {
       if (w !== 2 * s && w !== 2 * s + 1 || !black[b].label) return;
       oledText(o, black[b].label, w === 2 * s ? 64 : 126, 18, w === 2 * s ? "center" : "right", 11,
                black[b].lit || pressedRecently(blackKeys[b]));
+      // La page qui joue : une barre en haut, au-dessus de son nom.
+      if (black[b].head) { o.fillStyle = "#fff"; o.fillRect(w === 2 * s ? 40 : 82, 0, 46, 3); }
     });
     o.fillStyle = "#333"; o.fillRect(0, 31, 128, 1);
     // Ce qui differe de ce que l'ecran a recu : les pages a envoyer.
@@ -955,7 +960,9 @@ function keyLabels() {
   });
   blackKeys.forEach((b, k) => {
     b.querySelector("span").textContent = black[k].kind === KIND.Note ? "" : black[k].label;
-    b.classList.toggle("fn", black[k].kind === KIND.Clipboard || black[k].kind === KIND.Extension);
+    b.classList.toggle("fn", black[k].kind === KIND.Clipboard || black[k].kind === KIND.Extension || black[k].kind === KIND.Bar);
+    b.classList.toggle("lit", !!leds && black[k].kind === KIND.Bar && black[k].lit);
+    b.classList.toggle("head", !!leds && black[k].head);
   });
   drawOleds(white, black);
   pumpOleds();
@@ -963,7 +970,7 @@ function keyLabels() {
     play: "<b>PLAY</b> the track's instrument · REC = edit what the view shows · ⇧REC (or Enter + Space) = live",
     live: "<b>LIVE</b> — plays and records at the current step · STOP to leave",
     steps: inSub ? "<b>REC · SUBSTEPS</b> — white keys = substeps · black keys = clipboard"
-      : "<b>REC · STEPS</b> — white key = step · hold it and turn a knob to edit that step · black keys = clipboard",
+      : "<b>REC · STEPS</b> — white key = step · black keys = bars (the playing one follows) and clipboard",
     notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances · ⇧ + black keys = clipboard",
     harmony: host.rec === "grid"
       ? "<b>REC · CHORDS</b> — a degree writes its chord at the cursor, which advances · hold colours (8-16) and alterations (black) with it"
@@ -1586,6 +1593,7 @@ function frame() {
 }
 
 function drawFrame() {
+  M._nidmi_follow();   // pendant PLAY, la page suit la lecture
   // REC + PLAY : sur une lane, Valeur enregistre le geste au lieu d'editer un point.
   M._nidmi_set_rec({ off: 0, grid: 1, live: 2 }[host.rec]);
   M._nidmi_describe();
