@@ -609,8 +609,8 @@ function clipboardKey(k) {
   const row = M._nidmi_cur_row(), step = M._nidmi_cur_step(), bar = M._nidmi_cur_bar();
   if (k === 7) {
     const scope = advanceScope(7);
-    Object.assign(clip, { valid: true, row, step, bar, cut: isShift(), scope });
-    toast(`${isShift() ? "Cut" : "Copy"}: ${SCOPES[scope]}`);
+    Object.assign(clip, { valid: true, row, step, bar, cut: false, scope });
+    toast(`Copy: ${SCOPES[scope]}`);
   } else if (k === 8) {
     if (!clip.valid) { toast("Clipboard empty"); return; }
     if (clip.scope === 2) cmd(CMD.CopyBar, { a: clip.bar, f: bar });
@@ -765,18 +765,21 @@ function pressWhite(i) {
   return null;
 }
 function pressBlack(k) {
+  // ⇧ : les PAGES et le presse-papier, dans tous les modes.
+  if (isShift()) {
+    M._nidmi_keys_describe();
+    const f = M._nidmi_key_flags(1, k), kind = (f >> 4) & 15;
+    if (kind === KIND.Bar) M._nidmi_select_page(f >> 8);
+    else if (kind === KIND.Clipboard) clipboardKey(k);
+    return null;
+  }
   // Une noire sans note chromatique entre ses deux blanches est muette (keys::kNoNote).
   const muted = blackMidi(k) === 255;
   switch (keyMode()) {
     case "play":    return muted ? null : playKey(blackMidi(k));
     case "live":    return muted ? null : liveKey(blackMidi(k));
-    case "notes":   // ROLL : les noires sont des alterations, ⇧ donne le presse-papier
-      if (isShift()) { clipboardKey(k); return null; }
-      return muted ? null : writeNoteKey(blackMidi(k));
-    case "steps":   // les PAGES, et le presse-papier
-      { M._nidmi_keys_describe(); const f = M._nidmi_key_flags(1, k);
-        if (((f >> 4) & 15) === KIND.Bar) { M._nidmi_select_page(f >> 8); return null; } }
-      clipboardKey(k); return null;
+    case "notes":   return muted ? null : writeNoteKey(blackMidi(k));
+    case "steps":   return null;   // libres : pages et presse-papier sont sous ⇧
     case "harmony": return harmonyBlack(k);
   }
   return null;
@@ -969,14 +972,14 @@ function keyLabels() {
   const text = {
     play: "<b>PLAY</b> the track's instrument · REC = edit what the view shows · ⇧REC (or Enter + Space) = live",
     live: "<b>LIVE</b> — plays and records at the current step · STOP to leave",
-    steps: inSub ? "<b>REC · SUBSTEPS</b> — white keys = substeps · black keys = clipboard"
-      : "<b>REC · STEPS</b> — white key = step · black keys = bars (the playing one follows) and clipboard",
-    notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances · ⇧ + black keys = clipboard",
+    steps: inSub ? "<b>REC · SUBSTEPS</b> — white keys = substeps"
+      : "<b>REC · STEPS</b> — white key = step · hold it and turn a knob to edit that step",
+    notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances",
     harmony: host.rec === "grid"
       ? "<b>REC · CHORDS</b> — a degree writes its chord at the cursor, which advances · hold colours (8-16) and alterations (black) with it"
       : "<b>CHORDS</b> — left hand: degrees · right hand: colours (maj min dim sus4 7 maj7 9 11 13) · black keys: alterations and 6",
   }[mode];
-  document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · " : "") + text
+  document.getElementById("keymode").innerHTML = "Keyboard: " + (sh ? "<b>⇧</b> white keys = tracks · black keys = bars and clipboard · " : "") + text
     + ` <span class="busload">· OLED bus ${Math.round(oled.load * 100)} %${oled.queue.length ? ` · ${oled.queue.length} pages waiting` : ""}</span>`;
 }
 
