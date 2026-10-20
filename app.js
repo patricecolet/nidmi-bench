@@ -607,17 +607,17 @@ function clearScoped(scope, row, step, bar) {
 }
 function clipboardKey(k) {
   const row = M._nidmi_cur_row(), step = M._nidmi_cur_step(), bar = M._nidmi_cur_bar();
-  if (k === 7) {
-    const scope = advanceScope(7);
+  if (k === 8) {
+    const scope = advanceScope(8);
     Object.assign(clip, { valid: true, row, step, bar, cut: false, scope });
     toast(`Copy: ${SCOPES[scope]}`);
-  } else if (k === 8) {
+  } else if (k === 9) {
     if (!clip.valid) { toast("Clipboard empty"); return; }
     if (clip.scope === 2) cmd(CMD.CopyBar, { a: clip.bar, f: bar });
     else if (clip.scope === 1) cmd(CMD.CopyRow, { a: clip.row, b: clip.bar, c: row, f: bar });
     else cmd(CMD.CopyStep, { a: clip.row, b: clip.step, c: row, d: step, e: clip.bar, f: bar });
     if (clip.cut) { clearScoped(clip.scope, clip.row, clip.step, clip.bar); clip.valid = false; }
-    clip.lastKey = 8;
+    clip.lastKey = 9;
     toast(`Pasted: ${SCOPES[clip.scope]}`);
   } else if (k === 10) {
     const scope = advanceScope(10);
