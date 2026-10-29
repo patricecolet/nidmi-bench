@@ -4,10 +4,8 @@
 // enfonces viennent de describe(), les gestes passent par turn()/push(). La hauteur
 // affichee vient de resolvedNote(), les notes permises de allowedPitchClassesFor().
 //
-// Deux choses appartiennent a l'HOTE et vivent donc ici : le CADRAGE (zoom, fenetre de
-// hauteurs) et le CLAVIER. Le clavier est la seule logique de grammaire ecrite ici :
-// a terme il devrait rejoindre le core, comme les molettes avant lui, pour que le
-// plugin et le firmware ne la recodent pas chacun de leur cote.
+// Le clavier passe aussi par le core (keys::press / release). Reste a l'HOTE ce qui
+// depend de l'ecran : le CADRAGE (zoom, fenetre de hauteurs).
 
 // Le wasm se charge TOUJOURS frais : un nidmi.wasm garde en cache par le navigateur,
 // plus vieux que ce script, n'a pas les fonctions qu'on appelle ici.
@@ -16,7 +14,7 @@ const { default: createNidmi } = await import(`./nidmi.js?v=${STAMP}`);
 const M = await createNidmi({ locateFile: (path) => `${path}?v=${STAMP}` });
 
 // Et s'il manque quand meme quelque chose, on le dit au lieu d'un ecran noir.
-const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active", "_nidmi_keys_describe", "_nidmi_select_page"];
+const REQUIRED = ["_nidmi_curve_eval", "_nidmi_sub_step_on", "_nidmi_resolved_note", "_nidmi_key_scale", "_nidmi_allowed_pcs", "_nidmi_chord_pcs", "_nidmi_play_bar", "_nidmi_step_gate", "_nidmi_select_track", "_nidmi_note_name", "_nidmi_add_slot", "_nidmi_chord_symbol", "_nidmi_fill_active", "_nidmi_keys_describe", "_nidmi_select_page", "_nidmi_key_press"];
 const missing = REQUIRED.filter((f) => typeof M[f] !== "function");
 if (missing.length) {
   document.body.insertAdjacentHTML("afterbegin",
@@ -258,7 +256,6 @@ const host = {
   rollBottom: 48,    // note la plus basse visible ; suit la note editee
   rec: "off",       // "off" | "grid" (saisie) | "live" (enregistrement temps reel)
   recHeld: false, recUsed: false,
-  held: null,        // pas maintenu au clavier : { edited }
   touched: new Array(6).fill(0),   // dernier geste par molette (ms)
   hover: new Array(6).fill(false),
   toast: "", toastUntil: 0,
@@ -310,7 +307,7 @@ function accelerate(slot, d) {
 function turn(slot, d) {
   if (!d) return;
   d = accelerate(slot, d);
-  if (host.held) host.held.edited = true;   // pas maintenu + molette : on edite CE pas
+  M._nidmi_keys_knob_turned();   // pas maintenu + molette : on edite CE pas
   if (M._nidmi_host_owns(slot)) hostTurn(slot, d);
   else { M._nidmi_turn(slot, d, now()); drainEvents(); }
   host.touched[slot] = now();
@@ -495,294 +492,61 @@ shiftBtn.addEventListener("click", () => { shiftSrc.latched = !shiftSrc.latched;
 //                  HARMONIE : degres, qualites, mesure ; noires = extensions.
 //   REC + PLAY     LIVE : joue et enregistre au pas en cours de lecture.
 //
-// C'est la grammaire d'Elektron. nidmi-seq-vst a la regle REC sans l'exception du
-// ROLL ni la distinction grille / live : a reconcilier, idealement dans le core.
+// C'est la grammaire d'Elektron. Elle vit dans le core (keys::press / keys::release) :
+// il decide, ecrit, deplace le curseur ; la page ne fait que le son, le message, et
+// l'allumage de la molette Step quand le curseur a bouge.
 
 const BLACK_LEFT = [0, 1, 3, 4, 5, 7, 8, 10, 11, 12, 14];
-const EXT_BITS = [1 << 7, 1 << 8, 1 << 9, 1 << 10, 1 << 0, 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5, 1 << 6];
-const EXT_NAMES = ["b7", "7", "b5", "#5", "9", "11", "13", "b9", "#9", "#11", "b13"];
+const MODES = ["play", "live", "steps", "notes", "harmony", "tracks"];
+const keyMode = () => MODES[M._nidmi_key_mode()];
 
-function keyMode() {
-  // HARMONY et la grille : le clavier d'ACCORDS, qu'on joue (sans REC) ou qu'on ecrive.
-  if (M._nidmi_view() === 3 || M._nidmi_view() === 6) return "harmony";
-  if (host.rec === "off") return "play";
-  if (host.rec === "live") return "live";
-  const v = M._nidmi_view();
-  if (v === 0 || v === 2) return "steps";
-  if (v === 1) return "notes";
-  if (v === 3 || v === 6) return "harmony";
-  return "play";
-}
-
-// Clavier diatonique : 16 blanches = 16 degres consecutifs de la gamme que le moteur
-// UTILISE (tonalite effective du pattern) ; celle du projet quand l'harmonie est coupee.
-// Sinon taper mi en do mineur ecrirait un mi que la lecture jouerait mi bemol.
-// La regle vit dans le core (keys::whiteMidi) : le firmware ne la recode pas.
-const whiteMidi = (i) => M._nidmi_white_midi(i);
-const blackMidi = (k) => M._nidmi_black_midi(k);
-
-// Un pas existant garde sa velocite et sa duree : la touche ne change que la hauteur.
-function writeStep(row, step, bar, midi) {
-  const p = M._nidmi_step(row, bar, step);
-  const vel = p & 1 ? (p >> 16) & 255 : 100;
-  const gate = p & 1 ? M._nidmi_step_gate(row, bar, step) : 80;
-  cmd(CMD.SetStep, { a: row, b: step, c: midi, d: vel, e: gate, f: bar });
-  return Math.max(1, (p >>> 24) & 255);   // span : ou tombe le pas suivant
-}
-
-// La touche passe par l'harmonie, comme le moteur : en do mineur, la noire do# joue do.
-// Sans ca le clavier faisait entendre des notes que la lecture ne jouerait jamais.
-// Dans un sous-pas on garde la note brute : en mode relatif, c'est un decalage.
-// Une row en FOLLOW s'ecrit par rapport a la tonique : on ecrit la touche telle quelle,
-// et on entend sa transposition vers l'accord en cours (keyNote).
-function writtenNote(midi) {
-  if (M._nidmi_cur_sub() < 0 && M._nidmi_row_mode(M._nidmi_cur_row(), M._nidmi_cur_bar()) === 4) return midi;
-  return keyNote(midi);
-}
-
-function keyNote(midi) {
-  if (M._nidmi_cur_sub() >= 0 && M._nidmi_view() <= 2) return midi;
-  return M._nidmi_resolved_note(M._nidmi_cur_row(), M._nidmi_cur_bar(), midi);
-}
-
-// REC eteint : la touche joue l'instrument de la row, rien n'est ecrit.
-function playKey(midi) {
-  const ch = M._nidmi_row_channel(M._nidmi_cur_row()) + 1, n = keyNote(midi);
-  noteOn(ch, n, 100);
-  return () => noteOff(ch, n);
-}
-
-// LIVE : ce qu'on joue decide, pas ce qu'on regardait — la note tombe sur le pas EN
-// COURS de la row.
-function liveKey(midi) {
-  const release = playKey(midi), row = M._nidmi_cur_row();
-  if (M._nidmi_view() <= 2 && M._nidmi_row_kind(row) !== 1 && M._nidmi_is_playing()) {
-    const live = M._nidmi_playhead(row), n = M._nidmi_row_steps(row);
-    if (live !== 255 && live < n) writeStep(row, live, M._nidmi_play_bar_row(row), writtenNote(midi));
-  }
-  return release;
-}
-
-// ROLL sous REC : la touche ECRIT sa note au curseur, la fait entendre, puis le
-// curseur avance.
-function writeNoteKey(midi) {
-  const row = M._nidmi_cur_row();
-  if (M._nidmi_row_kind(row) === 1) return null;   // une lane n'a pas de hauteur
-  const release = playKey(midi);
-  const bar = M._nidmi_cur_bar(), cur = M._nidmi_cur_step(), sub = M._nidmi_cur_sub();
-  let advance = 1;
-  if (sub >= 0) {   // entre dans un pas : la note va au SOUS-pas
-    const idx = M._nidmi_step_sub(row, bar, cur);
-    if (idx !== 255) cmd(CMD.SetSubStep, { a: idx, b: sub, c: midi, d: 100, e: 80 });
-  } else {
-    advance = writeStep(row, cur, bar, writtenNote(midi));   // ce qu'on entend, ou sa source en Follow
-  }
-  // L'avance passe par la molette Pas elle-meme : le core borne, et sait s'il faut
-  // avancer d'un pas ou d'un sous-pas.
-  moveCursor(advance);
-  return release;
-}
-
-// Deplacer le curseur, c'est tourner `Pas`. Sauf dans le contexte de la row, ou `Pas`
-// porte le N : on n'y touche pas, sous peine de changer la longueur de la row.
-function moveCursor(delta) {
-  if (!delta || M._nidmi_ctx() === 0) return;
-  M._nidmi_turn(1, delta, now());
-  host.touched[1] = now();
-}
-
-// Le presse-papier. Un re-appui sur la MEME cible elargit le grain : pas -> row -> mesure.
+const SOUND = { None: 0, Key: 1, Chord: 2, Brief: 3 };
 const SCOPES = ["step", "row", "bar"];
-const clip = { valid: false, row: 0, step: 0, bar: 0, cut: false, scope: 0, lastKey: -1, lastTarget: "" };
-function advanceScope(key) {
-  const target = `${M._nidmi_cur_row()}:${M._nidmi_cur_step()}:${M._nidmi_cur_bar()}`;
-  const scope = clip.lastKey === key && clip.lastTarget === target ? (clip.lastScope + 1) % 3 : 0;
-  clip.lastKey = key; clip.lastTarget = target; clip.lastScope = scope;
-  return scope;
-}
-function clearScoped(scope, row, step, bar) {
-  if (scope === 2) cmd(CMD.ClearBar, { f: bar });
-  else if (scope === 1) cmd(CMD.ClearRow, { a: row, f: bar });
-  else cmd(CMD.ClearStep, { a: row, b: step, f: bar });
-}
-function clipboardKey(k) {
-  const row = M._nidmi_cur_row(), step = M._nidmi_cur_step(), bar = M._nidmi_cur_bar();
-  if (k === 8) {
-    const scope = advanceScope(8);
-    Object.assign(clip, { valid: true, row, step, bar, cut: false, scope });
-    toast(`Copy: ${SCOPES[scope]}`);
-  } else if (k === 9) {
-    if (!clip.valid) { toast("Clipboard empty"); return; }
-    if (clip.scope === 2) cmd(CMD.CopyBar, { a: clip.bar, f: bar });
-    else if (clip.scope === 1) cmd(CMD.CopyRow, { a: clip.row, b: clip.bar, c: row, f: bar });
-    else cmd(CMD.CopyStep, { a: clip.row, b: clip.step, c: row, d: step, e: clip.bar, f: bar });
-    if (clip.cut) { clearScoped(clip.scope, clip.row, clip.step, clip.bar); clip.valid = false; }
-    clip.lastKey = 9;
-    toast(`Pasted: ${SCOPES[clip.scope]}`);
-  } else if (k === 10) {
-    const scope = advanceScope(10);
-    clearScoped(scope, row, step, bar);
-    toast(`Cleared: ${SCOPES[scope]}`);
-  }
-}
+// L'accord qui sonne : un seul a la fois, chaque changement le remplace.
+let chordVoices = { ch: 1, notes: [] };
+function chordOff() { chordVoices.notes.forEach((n) => noteOff(chordVoices.ch, n)); chordVoices.notes = []; }
 
-// En saisie, la touche edite CE QUE LA GRILLE MONTRE (mode d'affichage de la row), et
-// pointe le curseur sur son pas : maintenue, elle laisse les molettes editer CE pas.
-// Comme chez Elektron, un pas deja actif ne s'eteint qu'au RELACHER, et seulement si
-// aucune molette n'a tourne entre-temps — sinon le maintenir pour l'editer l'effacerait.
-function pressStep(i) {
-  const row = M._nidmi_cur_row(), bar = M._nidmi_cur_bar(), cur = M._nidmi_cur_step();
-  if (M._nidmi_cur_sub() >= 0) {   // entre dans un pas : la touche vise le SOUS-pas
-    const sub = M._nidmi_step_sub(row, bar, cur);
-    if (sub === 255 || i >= M._nidmi_sub_len(sub)) return null;
-    moveCursor(i - M._nidmi_cur_sub());
-    cmd(CMD.ToggleSubStep, { a: sub, b: i });
-    return null;
+// Ce que le core a rendu pour la derniere touche. Renvoie de quoi couper le son de la
+// touche au relacher, ou null.
+function keyResult() {
+  drainEvents();
+  if (M._nidmi_key_cursor_moved()) host.touched[1] = now();
+  const fb = M._nidmi_key_feedback(), v = M._nidmi_key_feedback_value();
+  if (fb === 1) toast(`Track ${v + 1} · ${trackName(v)}`);
+  else if (fb === 2) toast(`No track ${v + 1}`);
+  else if (fb === 3) toast(`Copy: ${SCOPES[v]}`);
+  else if (fb === 4) toast(`Pasted: ${SCOPES[v]}`);
+  else if (fb === 5) toast("Clipboard empty");
+  else if (fb === 6) toast(`Cleared: ${SCOPES[v]}`);
+  const kind = M._nidmi_key_sound_kind();
+  if (kind === SOUND.None) return null;
+  const ch = M._nidmi_key_sound_channel() + 1, vel = M._nidmi_key_sound_velocity();
+  const notes = Array.from({ length: M._nidmi_key_sound_count() }, (_, i) => M._nidmi_key_sound_note(i));
+  if (kind === SOUND.Key) {
+    notes.forEach((n) => noteOn(ch, n, vel));
+    return () => notes.forEach((n) => noteOff(ch, n));
   }
-  const step = Math.floor(cur / 16) * 16 + i;
-  if (step >= M._nidmi_row_steps(row)) return null;
-  moveCursor(step - cur);
-  if (M._nidmi_row_kind(row) === 1) return pressCurveStep(row, bar, step);
-  const p = M._nidmi_step(row, bar, step), mode = M._nidmi_row_display(row);
-  if (mode === DM.Fill) {
-    // always -> fill -> not fill -> always
-    cmd(CMD.SetStepCond, { a: row, b: step, c: (((p >> 4) & 3) + 1) % 3, f: bar });
-    return null;
-  }
-  if (mode === 1) {
-    const on = !(p & 2);
-    cmd(CMD.SetStepAccent, { a: row, b: step, x: on ? 1 : 0, f: bar });
-    if (on && M._nidmi_accent_amount() === 0) cmd(CMD.SetPatternAccentAmount, { a: 40 });   // sinon inaudible
-    return null;
-  }
-  if (mode === 2) {
-    const on = !(p & 8);
-    cmd(CMD.SetStepSwing, { a: row, b: step, x: on ? 1 : 0, f: bar });
-    if (on && !M._nidmi_pattern_swings()) cmd(CMD.SetPatternSwing, { a: 58, x: 1 });   // pourcentage dans a
-    return null;
-  }
-  const wasOn = !!(p & 1);
-  if (!wasOn) cmd(CMD.ToggleStep, { a: row, b: step, f: bar });
-  const held = { edited: false };
-  host.held = held;
-  return () => {
-    if (host.held === held) host.held = null;
-    if (wasOn && !held.edited) cmd(CMD.ToggleStep, { a: row, b: step, f: bar });
-  };
-}
-
-// Sur une COURBE, la touche du pas pose un point la ou la courbe passe (rien ne saute),
-// ou retire celui qui y est — au relacher, et seulement si aucune molette n'a tourne :
-// maintenir la touche pour regler le point ne doit pas l'effacer.
-function pressCurveStep(row, bar, step) {
-  const idx = M._nidmi_curve_point_on_step(row, bar, step);
-  if (idx < 0) {
-    const pos = bar * TICKS + Math.floor(step * TICKS / M._nidmi_row_steps(row));
-    const v = Math.round(M._nidmi_curve_eval(row, pos) / 128) * 128;
-    curvePoint(row, pos, v);
-  }
-  const held = { edited: false };
-  host.held = held;
-  return () => {
-    if (host.held === held) host.held = null;
-    if (idx >= 0 && !held.edited) {
-      const now = M._nidmi_curve_point_on_step(row, bar, step);
-      if (now >= 0) cmd(CMD.RemoveCurvePoint, { a: row, b: now });
-    }
-  };
-}
-
-// LE CLAVIER D'ACCORDS (keys::chordFromKeys) : la main gauche choisit le DEGRE (blanches
-// 1-7), la droite la COULEUR (blanches 8-16 : maj min dim sus4 7 maj7 9 11 13) et les
-// ALTERATIONS (noires). On les tient dans n'importe quel ordre. Sans REC, la piste joue
-// l'accord ; avec REC, il s'ecrit dans le slot sous le curseur, qui avance : on tape une
-// grille accord apres accord.
-const chordKeys = { whites: 0, blacks: 0, degree: 0, slot: -1, notes: [], ch: 1 };
-function syncHeld() { M._nidmi_set_held(chordKeys.whites, chordKeys.blacks); }
-function chordColors() { return chordKeys.whites >> 7; }
-function chordSound(on) {
-  chordKeys.notes.forEach((n) => noteOff(chordKeys.ch, n));
-  chordKeys.notes = [];
-  if (!on || !chordKeys.degree) return;
-  const count = M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
-  chordKeys.ch = M._nidmi_row_channel(M._nidmi_cur_row()) + 1;
-  // Au-dela de trois sons, chaque voix baisse : l'accord garde le volume d'une triade.
-  const vel = Math.round(90 * Math.sqrt(3 / Math.max(3, count)));
-  for (let i = 0; i < count; i++) { const n = M._nidmi_chord_built_note(i); noteOn(chordKeys.ch, n, vel); chordKeys.notes.push(n); }
-}
-// L'accord tenu change (une couleur arrive) : on le rejoue, ou on le reecrit.
-function chordRefresh() {
-  if (!chordKeys.degree) return;
-  if (host.rec === "grid") {
-    M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
-    M._nidmi_chord_write(chordKeys.slot, now());
-  } else chordSound(true);
-}
-// Une souris n'a qu'un doigt : dans le banc, COULEURS et ALTERATIONS se verrouillent d'un
-// clic et se liberent d'un autre, comme SHIFT. Sur le boitier, on les tiendra.
-function harmonyWhite(i) {
-  if (i >= 7) { chordKeys.whites ^= 1 << i; syncHeld(); chordRefresh(); return null; }
-  chordKeys.whites |= 1 << i; syncHeld();
-  if (i < 7) {
-    chordKeys.degree = i + 1;
-    if (host.rec === "grid") {
-      const cur = M._nidmi_cur_slot();
-      chordKeys.slot = cur;
-      M._nidmi_chord_build(chordKeys.degree, chordColors(), chordKeys.blacks);
-      M._nidmi_chord_write(cur, now());
-      chordSound(true); setTimeout(() => chordSound(false), 250);   // l'entendre en l'ecrivant
-      M._nidmi_set_slot(cur + 1);
-    } else chordSound(true);
-  } else chordRefresh();
-  return () => {
-    chordKeys.whites &= ~(1 << i); syncHeld();
-    if (i < 7 && chordKeys.degree === i + 1) { if (host.rec !== "grid") chordSound(false); chordKeys.degree = 0; }
-  };
-}
-function harmonyBlack(k) {
-  if (k >= 9) return null;
-  chordKeys.blacks ^= 1 << k; syncHeld();
-  chordRefresh();
+  chordOff();
+  notes.forEach((n) => noteOn(ch, n, vel));
+  chordVoices = { ch, notes };
+  if (kind === SOUND.Brief) setTimeout(() => { if (chordVoices.notes === notes) chordOff(); }, 250);   // l'entendre en l'ecrivant
   return null;
 }
+function keyDown(black, i) { M._nidmi_key_press(black ? 1 : 0, i, now()); return keyResult(); }
+function keyUp(black, i) { M._nidmi_key_release(black ? 1 : 0, i, now()); keyResult(); }
 
-// ⇧ + blanche N = la PISTE N, dans toutes les vues et tous les modes : changer
-// d'instrument est le meme geste partout.
-function selectTrackKey(i) {
-  if (M._nidmi_select_track(i)) toast(`Track ${i + 1} · ${trackName(i)}`);
-  else toast(`No track ${i + 1}`);
-}
-
-function pressWhite(i) {
-  if (isShift()) { selectTrackKey(i); return null; }
-  switch (keyMode()) {
-    case "play":    return playKey(whiteMidi(i));
-    case "live":    return liveKey(whiteMidi(i));
-    case "notes":   return writeNoteKey(whiteMidi(i));
-    case "steps":   return pressStep(i);
-    case "harmony": return harmonyWhite(i);
-  }
-  return null;
-}
-function pressBlack(k) {
-  // ⇧ : les PAGES et le presse-papier, dans tous les modes.
-  if (isShift()) {
-    M._nidmi_keys_describe();
-    const f = M._nidmi_key_flags(1, k), kind = (f >> 4) & 15;
-    if (kind === KIND.Bar) M._nidmi_select_page(f >> 8);
-    else if (kind === KIND.Clipboard) clipboardKey(k);
+// Une souris n'a qu'un doigt : dans le banc, COULEURS et ALTERATIONS d'accord se
+// verrouillent d'un clic et se liberent d'un autre, comme SHIFT. Sur le boitier, on les
+// tiendra.
+function pressKey(black, i) {
+  M._nidmi_keys_describe();
+  const kind = (M._nidmi_key_flags(black ? 1 : 0, i) >> 4) & 15;
+  if (kind === KIND.Quality || kind === KIND.Extension) {
+    if (M._nidmi_key_held(black ? 1 : 0, i)) keyUp(black, i); else keyDown(black, i);
     return null;
   }
-  // Une noire sans note chromatique entre ses deux blanches est muette (keys::kNoNote).
-  const muted = blackMidi(k) === 255;
-  switch (keyMode()) {
-    case "play":    return muted ? null : playKey(blackMidi(k));
-    case "live":    return muted ? null : liveKey(blackMidi(k));
-    case "notes":   return muted ? null : writeNoteKey(blackMidi(k));
-    case "steps":   return null;   // libres : pages et presse-papier sont sous ⇧
-    case "harmony": return harmonyBlack(k);
-  }
-  return null;
+  const stop = keyDown(black, i);
+  return () => { if (stop) stop(); keyUp(black, i); };
 }
 
 const keysEl = document.getElementById("keys");
@@ -802,7 +566,7 @@ for (let i = 0; i < 16; i++) {
   const k = document.createElement("div");
   k.className = "wk";
   k.innerHTML = "<span></span>";
-  bindKey(k, () => pressWhite(i));
+  bindKey(k, () => pressKey(false, i));
   keysEl.appendChild(k);
   whiteKeys.push(k);
 }
@@ -810,7 +574,7 @@ for (let k = 0; k < 11; k++) {
   const b = document.createElement("div");
   b.className = "bk";
   b.innerHTML = "<span></span>";
-  bindKey(b, () => pressBlack(k));
+  bindKey(b, () => pressKey(true, k));
   keysEl.appendChild(b);
   blackKeys.push(b);
 }
@@ -975,6 +739,7 @@ function keyLabels() {
     steps: inSub ? "<b>REC · SUBSTEPS</b> — white keys = substeps"
       : "<b>REC · STEPS</b> — white key = step · hold it and turn a knob to edit that step",
     notes: "<b>REC · NOTES</b> — the key writes its note at the cursor, which then advances",
+    tracks: "",
     harmony: host.rec === "grid"
       ? "<b>REC · CHORDS</b> — a degree writes its chord at the cursor, which advances · hold colours (8-16) and alterations (black) with it"
       : "<b>CHORDS</b> — left hand: degrees · right hand: colours (maj min dim sus4 7 maj7 9 11 13) · black keys: alterations and 6",
@@ -1054,6 +819,21 @@ function setRes(value) {
 }
 document.getElementById("res").onchange = (e) => setRes(e.target.value);
 setRes("480x320");
+
+// L'ECRAN TACTILE. Chaque image note ses zones touchables au fil du dessin ; un toucher
+// prend la derniere zone qui le contient (la plus haute). Toucher une case = y mettre le
+// curseur, toucher le cadre d'une molette = l'appuyer. La grammaire reste au core.
+let hits = [];
+const hit = (x, y, w, h, act) => hits.push({ x, y, w, h, act });
+canvas.style.touchAction = "manipulation";
+canvas.addEventListener("pointerdown", (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * W / r.width, y = (e.clientY - r.top) * H / r.height;
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const z = hits[i];
+    if (x >= z.x && x < z.x + z.w && y >= z.y && y < z.y + z.h) { z.act(); return; }
+  }
+});
 const layoutSel = document.getElementById("layout");
 
 const C = {
@@ -1250,7 +1030,7 @@ function drawRows(area) {
   const first = M._nidmi_track_first_row(track) + skip, rows = shown;
   const adding = M._nidmi_add_slot();
   const labelW = 30, top = area.y + 4, gw = area.w - labelW - 4;
-  const rowH = Math.min(40, (area.h - 8) / (rows + (adding ? 1 : 0)));
+  const rowH = Math.min(40, (area.h - 8) / (rows + 1));   // + la case « + », toujours la
   const curRow = M._nidmi_cur_row(), curStep = M._nidmi_cur_step(), playing = M._nidmi_is_playing();
   const harm = M._nidmi_harmony_active();
   const { t0, t1 } = timeWindow(), span = t1 - t0;
@@ -1279,6 +1059,7 @@ function drawRows(area) {
       if (!visible(s)) continue;
       g.fillStyle = C.off;
       g.fillRect(xOf(s) + 1, y + 1, cw - 2, rowH - 2);
+      hit(xOf(s), y, cw, rowH, () => M._nidmi_select_step(r, bar, s));
     }
 
     // 2. Le contenu, selon ce que le mode encode. Une lane montre TOUJOURS sa courbe.
@@ -1357,15 +1138,19 @@ function drawRows(area) {
       }
     }
   }
-  // La case « + » : une ligne d'ajout sous la derniere row de la piste.
-  if (adding) {
-    const y = top + rows * rowH;
-    g.setLineDash([3, 3]); g.strokeStyle = C.text; g.lineWidth = 1;
-    g.strokeRect(area.x + labelW + 1.5, y + 2.5, gw - 3, rowH - 5); g.setLineDash([]);
-    g.font = FONT(10, true); g.fillStyle = C.accent; g.fillText("R+", area.x + 4, y + rowH / 2 + 3);
-    g.font = FONT(10); g.fillStyle = C.muted;
-    g.fillText("Value: + add · − remove last (if empty)", area.x + labelW + 10, y + rowH / 2 + 3);
-  }
+  // La case « + » : toujours sous la derniere row de la piste, pour ajouter d'un toucher.
+  // Le curseur dessus, elle s'allume et dit ce que fait Value.
+  const y = top + rows * rowH;
+  // Premier toucher : le curseur y va. Deuxieme : la row est ajoutee, comme Value +1.
+  hit(area.x, y, area.w, rowH, () => {
+    if (!M._nidmi_add_slot()) { M._nidmi_select_add_slot(); return; }
+    M._nidmi_turn(2, 1, now()); drainEvents();
+  });
+  g.setLineDash([3, 3]); g.strokeStyle = adding ? C.text : "#2e363e"; g.lineWidth = 1;
+  g.strokeRect(area.x + labelW + 1.5, y + 2.5, gw - 3, rowH - 5); g.setLineDash([]);
+  g.font = FONT(10, adding); g.fillStyle = adding ? C.accent : C.muted; g.fillText("R+", area.x + 4, y + rowH / 2 + 3);
+  g.font = FONT(10); g.fillStyle = C.muted;
+  g.fillText(adding ? "Value: + add · − remove last (if empty)" : "add a row", area.x + labelW + 10, y + rowH / 2 + 3);
 }
 
 // LE ROLL. La hauteur dessinee est la note JOUEE (resolvedNote), pas la note ecrite ;
@@ -1418,6 +1203,7 @@ function drawRoll(area) {
     const fs = s / n;
     if (fs < t0 - 1e-9 || fs >= t1 - 1e-9) continue;
     const x = gx + (fs - t0) / tspan * gw;
+    hit(x, gy, cw, gh + velH + 4, () => M._nidmi_select_step(r, bar, s));
     if (s === head) { g.fillStyle = "rgba(255,106,95,0.18)"; g.fillRect(x, gy, cw, gh); }
     if (s === curStep) { g.fillStyle = "rgba(95,183,192,0.10)"; g.fillRect(x, gy, cw, gh + velH + 4); }
     g.fillStyle = "#1a1f24"; g.fillRect(x, gy, 1, gh);
@@ -1461,6 +1247,7 @@ function drawHarmony(area) {
   const chipW = 58, chipH = 44, perRow = Math.max(1, Math.floor((area.w - 8) / (chipW + 6)));
   for (let i = 0; i <= Math.min(len, 31); i++) {
     const x = area.x + 8 + (i % perRow) * (chipW + 6), y = area.y + 30 + Math.floor(i / perRow) * (chipH + 6);
+    hit(x, y, chipW, chipH, () => M._nidmi_set_slot(i));
     if (i === len) {   // le slot d'AJOUT
       g.strokeStyle = i === cur ? C.text : "#2e363e"; g.setLineDash([3, 3]);
       g.strokeRect(x + 0.5, y + 0.5, chipW, chipH); g.setLineDash([]);
@@ -1532,6 +1319,7 @@ function drawChart() {
       const b = (top + li) * 4 + k;
       if (b >= bars) continue;
       const x = pad + k * boxW, y = HEAD_H + pad / 2 + li * lineH;
+      hit(x, y, boxW, lineH, () => M._nidmi_select_chart_bar(b));
       g.fillStyle = b === playBar ? "#1e3d27" : "#11161b";
       g.fillRect(x + 1, y + 1, boxW - 2, lineH - 2);
       g.strokeStyle = "#2b333b"; g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, boxW - 1, lineH - 1);
@@ -1608,6 +1396,7 @@ function drawFrame() {
     });
   }
   const view = M._nidmi_view(), geo = geometry();
+  hits = [];
 
   g.fillStyle = C.bg;
   g.fillRect(0, 0, W, H);
@@ -1620,7 +1409,11 @@ function drawFrame() {
   else if (view === 3) drawHarmony(geo.content);
   else drawPlaceholder(geo.content, view);
   g.restore();
-  knobs.forEach((k, i) => drawCell(k, geo.cells[i], i));
+  knobs.forEach((k, i) => {
+    drawCell(k, geo.cells[i], i);
+    const c = geo.cells[i];
+    hit(c.x, c.y, c.w, c.h, () => push(i));
+  });
   finishFrame(knobs, view);
 }
 
